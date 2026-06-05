@@ -11,16 +11,17 @@ import { formatCurrency } from './utils';
 
 const sql = postgres(process.env.POSTGRES_URL!, { ssl: 'require' });
 
+// ==========================================================
+// 1. FETCH REVENUE (Bersih dari Delay Buatan / setTimeout)
+// ==========================================================
 export async function fetchRevenue() {
   try {
-
     console.log('Fetching revenue data...');
-    await new Promise((resolve) => setTimeout(resolve, 300));
-
+    
+    // Langsung memanggil database tanpa simulasi delay
     const data = await sql<Revenue[]>`SELECT * FROM revenue`;
 
-    console.log('Data fetch completed after 3 seconds.');
-
+    console.log('Data fetch completed.');
     return data;
   } catch (error) {
     console.error('Database Error:', error);
@@ -28,6 +29,9 @@ export async function fetchRevenue() {
   }
 }
 
+// ==========================================================
+// 2. FETCH LATEST INVOICES
+// ==========================================================
 export async function fetchLatestInvoices() {
   try {
     const data = await sql<LatestInvoiceRaw[]>`
@@ -48,11 +52,11 @@ export async function fetchLatestInvoices() {
   }
 }
 
+// ==========================================================
+// 3. FETCH CARD DATA (Dijalankan secara Paralel)
+// ==========================================================
 export async function fetchCardData() {
   try {
-    // You can probably combine these into a single SQL query
-    // However, we are intentionally splitting them to demonstrate
-    // how to initialize multiple queries in parallel with JS.
     const invoiceCountPromise = sql`SELECT COUNT(*) FROM invoices`;
     const customerCountPromise = sql`SELECT COUNT(*) FROM customers`;
     const invoiceStatusPromise = sql`SELECT
@@ -83,6 +87,9 @@ export async function fetchCardData() {
   }
 }
 
+// ==========================================================
+// 4. FETCH FILTERED INVOICES (Pencarian & Pagination)
+// ==========================================================
 const ITEMS_PER_PAGE = 6;
 export async function fetchFilteredInvoices(
   query: string,
@@ -119,6 +126,9 @@ export async function fetchFilteredInvoices(
   }
 }
 
+// ==========================================================
+// 5. FETCH INVOICES PAGES (Total Halaman Pagination)
+// ==========================================================
 export async function fetchInvoicesPages(query: string) {
   try {
     const data = await sql`SELECT COUNT(*)
@@ -140,6 +150,9 @@ export async function fetchInvoicesPages(query: string) {
   }
 }
 
+// ==========================================================
+// 6. FETCH INVOICE BY ID (Data Ambilan untuk Form Edit)
+// ==========================================================
 export async function fetchInvoiceById(id: string) {
   try {
     const data = await sql<InvoiceForm[]>`
@@ -154,10 +167,10 @@ export async function fetchInvoiceById(id: string) {
 
     const invoice = data.map((invoice) => ({
       ...invoice,
-      // Convert amount from cents to dollars
-      amount: invoice.amount / 100,
+      amount: invoice.amount / 100, // Konversi satuan sen kembali ke unit utama
     }));
 
+    console.log(invoice); 
     return invoice[0];
   } catch (error) {
     console.error('Database Error:', error);
@@ -165,6 +178,9 @@ export async function fetchInvoiceById(id: string) {
   }
 }
 
+// ==========================================================
+// 7. FETCH CUSTOMERS (Daftar Opsi untuk Dropdown Form)
+// ==========================================================
 export async function fetchCustomers() {
   try {
     const customers = await sql<CustomerField[]>`
@@ -182,25 +198,28 @@ export async function fetchCustomers() {
   }
 }
 
+// ==========================================================
+// 8. FETCH FILTERED CUSTOMERS (Tabel Halaman Customers)
+// ==========================================================
 export async function fetchFilteredCustomers(query: string) {
   try {
     const data = await sql<CustomersTableType[]>`
-		SELECT
-		  customers.id,
-		  customers.name,
-		  customers.email,
-		  customers.image_url,
-		  COUNT(invoices.id) AS total_invoices,
-		  SUM(CASE WHEN invoices.status = 'pending' THEN invoices.amount ELSE 0 END) AS total_pending,
-		  SUM(CASE WHEN invoices.status = 'paid' THEN invoices.amount ELSE 0 END) AS total_paid
-		FROM customers
-		LEFT JOIN invoices ON customers.id = invoices.customer_id
-		WHERE
-		  customers.name ILIKE ${`%${query}%`} OR
+    SELECT
+      customers.id,
+      customers.name,
+      customers.email,
+      customers.image_url,
+      COUNT(invoices.id) AS total_invoices,
+      SUM(CASE WHEN invoices.status = 'pending' THEN invoices.amount ELSE 0 END) AS total_pending,
+      SUM(CASE WHEN invoices.status = 'paid' THEN invoices.amount ELSE 0 END) AS total_paid
+    FROM customers
+    LEFT JOIN invoices ON customers.id = invoices.customer_id
+    WHERE
+      customers.name ILIKE ${`%${query}%`} OR
         customers.email ILIKE ${`%${query}%`}
-		GROUP BY customers.id, customers.name, customers.email, customers.image_url
-		ORDER BY customers.name ASC
-	  `;
+    GROUP BY customers.id, customers.name, customers.email, customers.image_url
+    ORDER BY customers.name ASC
+    `;
 
     const customers = data.map((customer) => ({
       ...customer,

@@ -1,98 +1,135 @@
 'use server';
 
 import { z } from 'zod';
-import { revalidatePath } from 'next/cache'; 
-import { redirect } from 'next/navigation'; 
-import postgres from 'postgres'; 
+import { revalidatePath } from 'next/cache';
+import { redirect } from 'next/navigation';
+import postgres from 'postgres';
+import { signIn } from '@/auth';
+import { AuthError } from 'next-auth';
 
 // Hubungkan ke database PostgreSQL
-const sql = postgres(process.env.POSTGRES_URL!, { ssl: 'require' }); 
+const sql = postgres(process.env.POSTGRES_URL!, {
+  ssl: 'require',
+});
 
-// Definisikan skema validasi form menggunakan Zod
+// ==========================================================
+// VALIDASI FORM DENGAN ZOD (Ditambahkan Pesan Custom Merah)
+// ==========================================================
 const FormSchema = z.object({
   id: z.string(),
-  customerId: z.string(),
-  amount: z.coerce.number(),
-  status: z.enum(['pending', 'paid']),
+  customerId: z.string({
+    invalid_type_error: 'Please select a customer.',
+  }),
+  amount: z.coerce
+    .number()
+    .gt(0, { message: 'Please enter an amount greater than $0.' }),
+  status: z.enum(['pending', 'paid'], {
+    invalid_type_error: 'Please select an invoice status.',
+  }),
   date: z.string(),
 });
 
-// Skema khusus untuk membuat invoice baru (mengabaikan id dan date karena di-generate otomatis)
 const CreateInvoice = FormSchema.omit({ id: true, date: true });
-
-// Skema validasi khusus untuk Memperbarui Invoice (mengabaikan id & date)
 const UpdateInvoice = FormSchema.omit({ id: true, date: true });
 
+// Tipe Data untuk State Error pada useActionState
+export type State = {
+  errors?: {
+    customerId?: string[];
+    amount?: string[];
+    status?: string[];
+  };
+  message?: string | null;
+};
 
 // ==========================================================
-// 1. FUNGSI UNTUK MEMBUAT INVOICE BARU (CREATE)
+// 1. CREATE INVOICE (Diupdate agar Sinkron dengan useActionState)
 // ==========================================================
-export async function createInvoice(formData: FormData) {
-  // Validasi data form menggunakan skema Zod yang sudah di-omit
-  const { customerId, amount, status } = CreateInvoice.parse({
+export async function createInvoice(prevState: State, formData: FormData) {
+  // Gunakan safeParse agar form tidak crash jika kosong
+  const validatedFields = CreateInvoice.safeParse({
     customerId: formData.get('customerId'),
     amount: formData.get('amount'),
     status: formData.get('status'),
   });
 
-  // Mengubah nilai currency ke bentuk sen (cents) untuk menghindari masalah floating-point JavaScript
+  // Jika ada field kosong, kembalikan errors berupa teks merah ke UI
+  if (!validatedFields.success) {
+    return {
+      errors: validatedFields.error.flatten().fieldErrors,
+      message: 'Missing Fields. Failed to Create Invoice.',
+    };
+  }
+
+  // Jika sukses, ambil datanya
+  const { customerId, amount, status } = validatedFields.data;
   const amountInCents = amount * 100;
-  
-  // Membuat tanggal hari ini dengan format YYYY-MM-DD
   const date = new Date().toISOString().split('T')[0];
 
-  // Eksekusi Query SQL untuk memasukkan data baru ke database
-  await sql`
-    INSERT INTO invoices (customer_id, amount, status, date)
-    VALUES (${customerId}, ${amountInCents}, ${status}, ${date})
-  `;
+  try {
+    await sql`
+      INSERT INTO invoices (customer_id, amount, status, date)
+      VALUES (${customerId}, ${amountInCents}, ${status}, ${date})
+    `;
+  } catch (error) {
+    return { message: 'Database Error: Failed to Create Invoice.' };
+  }
 
-  // Bersihkan cache pada halaman daftar invoice agar data terbaru langsung muncul
   revalidatePath('/dashboard/invoices');
-  
-  // Alihkan kembali pengguna ke halaman daftar invoice
   redirect('/dashboard/invoices');
 }
 
-
 // ==========================================================
-// 2. FUNGSI UNTUK MEMPERBARUI INVOICE (UPDATE)
+// 2. UPDATE INVOICE
 // ==========================================================
 export async function updateInvoice(id: string, formData: FormData) {
-  // Validasi input menggunakan skema UpdateInvoice
   const { customerId, amount, status } = UpdateInvoice.parse({
     customerId: formData.get('customerId'),
     amount: formData.get('amount'),
     status: formData.get('status'),
   });
 
-  // Konversi nilai amount ke satuan sen
   const amountInCents = amount * 100;
 
-  // Eksekusi SQL UPDATE berdasarkan ID data
-  await sql`
-    UPDATE invoices
-    SET customer_id = ${customerId}, amount = ${amountInCents}, status = ${status}
-    WHERE id = ${id}
-  `;
+    await sql`
+        UPDATE invoices
+        SET customer_id = ${customerId}, amount = ${amountInCents}, status = ${status}
+        WHERE id = ${id}
+    `;
 
-  // Hapus cache halaman daftar invoice agar data terbaru langsung tampil
   revalidatePath('/dashboard/invoices');
-  
-  // Alihkan kembali pengguna ke halaman utama daftar invoice
   redirect('/dashboard/invoices');
 }
 
-
 // ==========================================================
-// 3. FUNGSI UNTUK MENGHAPUS INVOICE (DELETE)
+// 3. DELETE INVOICE
 // ==========================================================
 export async function deleteInvoice(id: string) {
-  // Eksekusi SQL DELETE berdasarkan ID data
-  await sql`
-    DELETE FROM invoices WHERE id = ${id}
-  `;
-  
-  // Memperbarui cache halaman invoice agar baris yang dihapus langsung hilang secara realtime
-  revalidatePath('/dashboard/invoices');
+    await sql`
+      DELETE FROM invoices
+      WHERE id = ${id}
+    `;
+    revalidatePath('/dashboard/invoices');
+}
+
+// ==========================================================
+// 4. AUTHENTICATE LOGIN
+// ==========================================================
+export async function authenticate(
+  prevState: string | undefined,
+  formData: FormData,
+) {
+  try {
+    await signIn('credentials', formData);
+  } catch (error) {
+    if (error instanceof AuthError) {
+      switch (error.type) {
+        case 'CredentialsSignin':
+          return 'Invalid credentials.';
+        default:
+          return 'Something went wrong.';
+      }
+    }
+    throw error;
+  }
 }
